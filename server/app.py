@@ -1,7 +1,12 @@
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import easyocr
 import os
+
+# 在導入 torch 之前設置環境變數，以最大限度減少記憶體使用
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+
+import easyocr
 import cv2
 import numpy as np
 from pptx import Presentation
@@ -16,6 +21,10 @@ import time
 import threading
 import base64
 import io
+import gc
+
+# 限制 PyTorch 緒數以減少記憶體佔用
+torch.set_num_threads(1)
 
 app = Flask(__name__)
 CORS(app)
@@ -130,13 +139,21 @@ def convert_pdf_to_ppt():
             processing_status["current_page"] = pno + 1
             print(f"[*] AI 深度分析: {pno+1}/{doc.page_count}")
             page = doc.load_page(pno)
-            pix = page.get_pixmap(dpi=300)
-            # Convert pixmap to numpy array without writing to disk
-            img_data = pix.tobytes("png")
-            np_img = np.frombuffer(img_data, dtype=np.uint8)
-            raw_img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
-            # OCR
-            results = reader.readtext(pix.tobytes("png"), contrast_ths=0.1, width_ths=1.0, y_ths=0.1)
+            pix = page.get_pixmap(dpi=150) # 降低 DPI 從 300 到 150 以節省記憶體
+            
+            # 直接從 pixmap 取得 numpy 陣列，避免重複的 PNG 編解碼
+            raw_img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+            if pix.n == 4:
+                raw_img = cv2.cvtColor(raw_img, cv2.COLOR_RGBA2RGB)
+                raw_img = cv2.cvtColor(raw_img, cv2.COLOR_RGB2BGR)
+            elif pix.n == 1:
+                raw_img = cv2.cvtColor(raw_img, cv2.COLOR_GRAY2BGR)
+            else:
+                raw_img = cv2.cvtColor(raw_img, cv2.COLOR_RGB2BGR)
+                
+            # OCR (直接傳入 numpy 陣列)
+            results = reader.readtext(raw_img, contrast_ths=0.1, width_ths=1.0, y_ths=0.1)
+            
             # Inpaint
             bboxes = [res[0] for res in results]
             clean_img = inpaint_text(raw_img, bboxes)
@@ -149,11 +166,14 @@ def convert_pdf_to_ppt():
             img_bytes = img_buf.tobytes()
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             slide.shapes.add_picture(io.BytesIO(img_bytes), 0, 0, prs.slide_width, prs.slide_height)
+            
+            # 準備文字框
+            img_w, img_h = pix.width, pix.height
+            
             # Add text boxes
             for (bbox, text, prob) in results:
                 if prob < 0.15:
                     continue
-                img_w, img_h = pix.width, pix.height
                 coords = np.array(bbox)
                 xmin, ymin = np.min(coords, axis=0)
                 xmax, ymax = np.max(coords, axis=0)
@@ -175,6 +195,11 @@ def convert_pdf_to_ppt():
                 p.font.name = "Microsoft JhengHei"
                 fontsize = int((final_h / 12700) * 0.72)
                 p.font.size = Pt(min(max(10, fontsize), 72))
+            
+            # 清理該頁資源
+            del raw_img, clean_img, pix, page, results, bboxes
+            gc.collect()
+
         doc.close()
         output_pptx = os.path.join(temp_dir, "output.pptx")
         prs.save(output_pptx)
