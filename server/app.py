@@ -27,7 +27,8 @@ import gc
 torch.set_num_threads(1)
 
 app = Flask(__name__)
-CORS(app)
+# 強化 CORS 設定，允許所有來源、方法和 Header
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # 全域變數：儲存即時處理狀態
 processing_status = {
