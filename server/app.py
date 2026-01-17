@@ -40,7 +40,10 @@ processing_status = {
 print("[*] 正在初始化 EasyOCR 引擎...")
 has_gpu = torch.cuda.is_available()
 print(f"[*] 運算設備: {'GPU (CUDA)' if has_gpu else 'CPU'}")
-reader = easyocr.Reader(['ch_tra', 'en'], gpu=has_gpu)
+
+# 指定本地模型路徑，避免執行時下載導致記憶體溢出
+model_path = os.path.join(os.path.dirname(__file__), 'models')
+reader = easyocr.Reader(['ch_tra', 'en'], gpu=has_gpu, model_storage_directory=model_path)
 
 def get_actual_text_color(original_img, bbox):
     try:
