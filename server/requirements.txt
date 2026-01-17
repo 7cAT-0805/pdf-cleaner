@@ -1,0 +1,9 @@
+flask
+flask-cors
+easyocr
+opencv-python-headless
+numpy
+python-pptx
+pymupdf
+torch --index-url https://download.pytorch.org/whl/cpu
+gunicorn
