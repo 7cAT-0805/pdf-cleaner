@@ -139,6 +139,10 @@ def calculate_rotation_angle(bbox):
     except:
         return 0
 
+@app.route('/')
+def index():
+    return "PDF to PPT Converter API is running", 200
+
 @app.route('/health')
 def health_check():
     return "OK", 200
