@@ -37,13 +37,32 @@ processing_status = {
     "is_processing": False
 }
 
-print("[*] 正在初始化 EasyOCR 引擎...")
-has_gpu = torch.cuda.is_available()
-print(f"[*] 運算設備: {'GPU (CUDA)' if has_gpu else 'CPU'}")
+# 移除全域 reader 初始化，改為延遲載入函數
+_reader = None
+_reader_lock = threading.Lock()
 
-# 指定本地模型路徑，避免執行時下載導致記憶體溢出
-model_path = os.path.join(os.path.dirname(__file__), 'models')
-reader = easyocr.Reader(['ch_tra', 'en'], gpu=has_gpu, model_storage_directory=model_path)
+def get_reader():
+    global _reader
+    with _reader_lock:
+        if _reader is None:
+            print("[*] 正在延遲初始化 EasyOCR 引擎...")
+            model_path = os.path.join(os.path.dirname(__file__), 'models')
+            # 增加 recognizer=True (預設), 但確保我們限制了模型搜尋路徑
+            has_gpu = torch.cuda.is_available()
+            _reader = easyocr.Reader(['ch_tra', 'en'], gpu=has_gpu, model_storage_directory=model_path, download_enabled=False)
+            print("[*] EasyOCR 引擎初始化完成")
+        return _reader
+
+def release_reader():
+    global _reader
+    with _reader_lock:
+        if _reader is not None:
+            print("[*] 釋放 EasyOCR 引擎以節省記憶體...")
+            del _reader
+            _reader = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 def get_actual_text_color(original_img, bbox):
     try:
@@ -120,6 +139,10 @@ def calculate_rotation_angle(bbox):
     except:
         return 0
 
+@app.route('/health')
+def health_check():
+    return "OK", 200
+
 @app.route('/convert', methods=['POST'])
 def convert_pdf_to_ppt():
     global processing_status
@@ -137,6 +160,10 @@ def convert_pdf_to_ppt():
         prs.slide_height = Inches(7.5)
         processing_status["total_pages"] = doc.page_count
         processing_status["is_processing"] = True
+        
+        # 獲取 Reader，如果沒有則初始化
+        reader = get_reader()
+        
         # Process each page
         for pno in range(doc.page_count):
             processing_status["current_page"] = pno + 1
@@ -209,6 +236,10 @@ def convert_pdf_to_ppt():
         # Reset status and clear preview
         processing_status["is_processing"] = False
         processing_status["preview_image"] = None
+        
+        # 處理完成後釋放 EasyOCR 以節省記憶體
+        release_reader()
+
         # Send file and clean up temp directory after response
         def cleanup_and_send():
             try:
@@ -225,6 +256,7 @@ def convert_pdf_to_ppt():
     except Exception as e:
         processing_status["is_processing"] = False
         processing_status["preview_image"] = None
+        release_reader()
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
